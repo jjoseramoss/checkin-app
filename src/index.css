@@ -1,0 +1,71 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 40 27% 96%;
+    --foreground: 20 14% 12%;
+
+    --card: 40 30% 99%;
+    --card-foreground: 20 14% 12%;
+
+    --primary: 20 14% 12%;
+    --primary-foreground: 40 30% 98%;
+
+    --secondary: 38 22% 91%;
+    --secondary-foreground: 20 14% 12%;
+
+    --muted: 38 20% 90%;
+    --muted-foreground: 25 8% 42%;
+
+    --accent: 32 45% 55%;
+    --accent-foreground: 40 30% 98%;
+
+    --destructive: 4 70% 50%;
+    --destructive-foreground: 40 30% 98%;
+
+    --success: 142 40% 38%;
+
+    --border: 34 18% 85%;
+    --input: 34 18% 85%;
+    --ring: 32 45% 55%;
+
+    --radius: 0.75rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    background-image:
+      radial-gradient(circle at 1px 1px, hsl(34 18% 82% / 0.5) 1px, transparent 0);
+    background-size: 22px 22px;
+  }
+  #root {
+    max-width: 480px;
+    margin-inline: auto;
+    min-height: 100vh;
+    position: relative;
+    background: hsl(var(--background));
+  }
+}
+
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
