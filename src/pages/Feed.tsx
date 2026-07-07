@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { CURRENT_USER_ID } from "@/data/mock";
+import { useAuth } from "@/hooks/useAuth";
 import { useFeed } from "@/hooks/useFeed";
 import { useFriends } from "@/hooks/useFriends";
 import { FeedItem } from "@/components/FeedItem";
@@ -10,6 +10,7 @@ export function Feed() {
   // Fully reactive: driven by check-ins + friendship state, so new activity
   // (yours or a connection's) appears automatically — same shape a Supabase
   // realtime subscription will fill in later.
+  const { userId } = useAuth();
   const { entries } = useFeed();
   const { statusFor, sendRequest, acceptRequest, declineRequest, removeFriend } = useFriends();
 
@@ -29,7 +30,7 @@ export function Feed() {
   const viewingUser = viewingEntry?.user ?? null;
   const viewingStatus: FriendStatus = !viewingUserId
     ? "none"
-    : viewingUserId === CURRENT_USER_ID
+    : viewingUserId === userId
       ? "self"
       : statusFor(viewingUserId);
 

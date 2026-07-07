@@ -1,100 +1,138 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { users, CURRENT_USER_ID } from "@/data/mock";
+import type { UserProfile } from "@/types";
+import { supabase } from "@/lib/supabase";
+import { useAuth } from "@/hooks/useAuth";
 
-const FRIENDS_KEY = "checkin.friends.v1";
+export type FriendStatusValue = "friend" | "incoming" | "outgoing" | "none";
 
-interface FriendsState {
-  /** Accepted, mutual friends. */
-  friends: string[];
-  /** Requests sent to me, awaiting my decision. */
-  incoming: string[];
-  /** Requests I've sent, awaiting the other person. */
-  outgoing: string[];
+interface FriendshipRow {
+  id: string;
+  requester_id: string;
+  addressee_id: string;
+  status: "pending" | "accepted";
+  created_at: string;
 }
 
-const SEED_STATE: FriendsState = {
-  friends: ["u-marco"],
-  incoming: ["u-sam"],
-  outgoing: [],
-};
+interface ProfileRow {
+  id: string;
+  username: string;
+  display_name: string;
+  avatar_url: string | null;
+  bio: string | null;
+}
 
-function loadFromStorage<T>(key: string, fallback: T): T {
-  try {
-    const raw = window.localStorage.getItem(key);
-    if (!raw) return fallback;
-    return JSON.parse(raw) as T;
-  } catch {
-    return fallback;
-  }
+function toProfile(p: ProfileRow): UserProfile {
+  return { id: p.id, username: p.username, displayName: p.display_name, avatarUrl: p.avatar_url ?? "", bio: p.bio ?? undefined };
 }
 
 /**
- * Prototype data layer for friends. Seeded with one accepted friend and one
- * incoming invite so the feature has something to demo. localStorage-backed
- * for now — swap for a real friends/requests table once Supabase is wired up.
+ * Real Supabase-backed friends: friendships table for requests/connections,
+ * profiles table for discovery. A brand new account has zero friendships and
+ * sees every other real user as discoverable — no seeded fake friends.
  */
 export function useFriends() {
-  const [state, setState] = useState<FriendsState>(() =>
-    loadFromStorage(FRIENDS_KEY, SEED_STATE)
-  );
+  const { userId } = useAuth();
+  const [rows, setRows] = useState<FriendshipRow[]>([]);
+  const [profiles, setProfiles] = useState<UserProfile[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  const reload = useCallback(async () => {
+    if (!userId) {
+      setRows([]);
+      setProfiles([]);
+      setIsLoading(false);
+      return;
+    }
+    const [{ data: friendshipRows }, { data: profileRows }] = await Promise.all([
+      supabase.from("friendships").select("*").or(`requester_id.eq.${userId},addressee_id.eq.${userId}`),
+      supabase.from("profiles").select("id, username, display_name, avatar_url, bio").neq("id", userId),
+    ]);
+    setRows((friendshipRows as FriendshipRow[]) ?? []);
+    setProfiles(((profileRows as ProfileRow[]) ?? []).map(toProfile));
+    setIsLoading(false);
+  }, [userId]);
 
   useEffect(() => {
-    window.localStorage.setItem(FRIENDS_KEY, JSON.stringify(state));
-  }, [state]);
+    setIsLoading(true);
+    reload();
+  }, [reload]);
 
-  const otherUsers = useMemo(
-    () => users.filter((u) => u.id !== CURRENT_USER_ID),
-    []
+  const otherIdIn = useCallback((row: FriendshipRow) => (row.requester_id === userId ? row.addressee_id : row.requester_id), [userId]);
+
+  const friendIds = useMemo(() => rows.filter((r) => r.status === "accepted").map(otherIdIn), [rows, otherIdIn]);
+  const incomingIds = useMemo(
+    () => rows.filter((r) => r.status === "pending" && r.addressee_id === userId).map((r) => r.requester_id),
+    [rows, userId]
+  );
+  const outgoingIds = useMemo(
+    () => rows.filter((r) => r.status === "pending" && r.requester_id === userId).map((r) => r.addressee_id),
+    [rows, userId]
   );
 
-  const discoverable = useMemo(
-    () =>
-      otherUsers.filter(
-        (u) =>
-          !state.friends.includes(u.id) &&
-          !state.incoming.includes(u.id) &&
-          !state.outgoing.includes(u.id)
-      ),
-    [otherUsers, state]
+  const connectedIds = useMemo(() => new Set([...friendIds, ...incomingIds, ...outgoingIds]), [friendIds, incomingIds, outgoingIds]);
+  const discoverable = useMemo(() => profiles.filter((p) => !connectedIds.has(p.id)), [profiles, connectedIds]);
+
+  const statusFor = useCallback(
+    (otherId: string): FriendStatusValue => {
+      if (friendIds.includes(otherId)) return "friend";
+      if (incomingIds.includes(otherId)) return "incoming";
+      if (outgoingIds.includes(otherId)) return "outgoing";
+      return "none";
+    },
+    [friendIds, incomingIds, outgoingIds]
   );
 
-  const sendRequest = useCallback((userId: string) => {
-    setState((prev) =>
-      prev.outgoing.includes(userId) || prev.friends.includes(userId)
-        ? prev
-        : { ...prev, outgoing: [...prev.outgoing, userId] }
-    );
-  }, []);
+  const sendRequest = useCallback(
+    async (otherId: string) => {
+      if (!userId) return;
+      const { data, error } = await supabase
+        .from("friendships")
+        .insert({ requester_id: userId, addressee_id: otherId })
+        .select()
+        .single();
+      if (!error && data) setRows((prev) => [...prev, data as FriendshipRow]);
+    },
+    [userId]
+  );
 
-  const acceptRequest = useCallback((userId: string) => {
-    setState((prev) => ({
-      ...prev,
-      incoming: prev.incoming.filter((id) => id !== userId),
-      friends: prev.friends.includes(userId) ? prev.friends : [...prev.friends, userId],
-    }));
-  }, []);
+  const acceptRequest = useCallback(
+    async (otherId: string) => {
+      const row = rows.find((r) => r.requester_id === otherId && r.addressee_id === userId && r.status === "pending");
+      if (!row) return;
+      const { data, error } = await supabase.from("friendships").update({ status: "accepted" }).eq("id", row.id).select().single();
+      if (!error && data) setRows((prev) => prev.map((r) => (r.id === row.id ? (data as FriendshipRow) : r)));
+    },
+    [rows, userId]
+  );
 
-  const declineRequest = useCallback((userId: string) => {
-    setState((prev) => ({ ...prev, incoming: prev.incoming.filter((id) => id !== userId) }));
-  }, []);
+  const declineRequest = useCallback(
+    async (otherId: string) => {
+      const row = rows.find((r) => r.requester_id === otherId && r.addressee_id === userId && r.status === "pending");
+      if (!row) return;
+      const { error } = await supabase.from("friendships").delete().eq("id", row.id);
+      if (!error) setRows((prev) => prev.filter((r) => r.id !== row.id));
+    },
+    [rows, userId]
+  );
 
-  const removeFriend = useCallback((userId: string) => {
-    setState((prev) => ({ ...prev, friends: prev.friends.filter((id) => id !== userId) }));
-  }, []);
-
-  function statusFor(userId: string): "friend" | "incoming" | "outgoing" | "none" {
-    if (state.friends.includes(userId)) return "friend";
-    if (state.incoming.includes(userId)) return "incoming";
-    if (state.outgoing.includes(userId)) return "outgoing";
-    return "none";
-  }
+  const removeFriend = useCallback(
+    async (otherId: string) => {
+      const row = rows.find((r) => (r.requester_id === otherId || r.addressee_id === otherId) && r.status === "accepted");
+      if (!row) return;
+      const { error } = await supabase.from("friendships").delete().eq("id", row.id);
+      if (!error) setRows((prev) => prev.filter((r) => r.id !== row.id));
+    },
+    [rows]
+  );
 
   return {
-    friendIds: state.friends,
-    incomingIds: state.incoming,
-    outgoingIds: state.outgoing,
+    friendIds,
+    incomingIds,
+    outgoingIds,
     discoverable,
-    friendCount: state.friends.length,
+    profiles,
+    friendCount: friendIds.length,
+    isLoading,
     statusFor,
     sendRequest,
     acceptRequest,

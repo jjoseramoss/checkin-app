@@ -1,6 +1,7 @@
+import { useEffect, useState } from "react";
 import { UserPlus, UserMinus, Check, X } from "lucide-react";
-import type { UserProfile } from "@/types";
-import { targets as allTargets } from "@/data/mock";
+import type { Frequency, Target, UserProfile } from "@/types";
+import { supabase } from "@/lib/supabase";
 import {
   Dialog,
   DialogContent,
@@ -35,7 +36,52 @@ export function UserProfileDialog({
   onDecline,
   onRemove,
 }: UserProfileDialogProps) {
-  const userTargets = user ? allTargets.filter((t) => t.userId === user.id).slice(0, 3) : [];
+  const [userTargets, setUserTargets] = useState<Target[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!user) {
+      setUserTargets([]);
+      return;
+    }
+    supabase
+      .from("targets")
+      .select("*")
+      .eq("user_id", user.id)
+      .eq("archived", false)
+      .order("created_at", { ascending: true })
+      .limit(3)
+      .then(({ data }) => {
+        if (cancelled) return;
+        interface TargetRow {
+          id: string;
+          user_id: string;
+          title: string;
+          emoji: string;
+          frequency: Frequency;
+          weekly_goal: number | null;
+          color_hex: string;
+          created_at: string;
+          archived: boolean;
+        }
+        setUserTargets(
+          ((data as TargetRow[]) ?? []).map((t) => ({
+            id: t.id,
+            userId: t.user_id,
+            title: t.title,
+            emoji: t.emoji,
+            frequency: t.frequency,
+            weeklyGoal: t.weekly_goal ?? undefined,
+            colorHex: t.color_hex,
+            createdAt: t.created_at,
+            archived: t.archived,
+          }))
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
 
   return (
     <Dialog open={!!user} onOpenChange={onOpenChange}>

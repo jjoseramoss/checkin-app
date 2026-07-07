@@ -45,6 +45,7 @@ export type MealSection = "breakfast" | "lunch" | "dinner" | "snacks";
 export interface MealItem {
   id: string;
   text: string;
+  protein: number | null;
 }
 
 export interface DietDay {

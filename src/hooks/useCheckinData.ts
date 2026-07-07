@@ -1,74 +1,103 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { CheckIn, Target } from "@/types";
-import {
-  CURRENT_USER_ID,
-  checkIns as seedCheckIns,
-  targets as seedTargets,
-} from "@/data/mock";
+import type { CheckIn, Frequency, Target } from "@/types";
+import { supabase } from "@/lib/supabase";
+import { useAuth } from "@/hooks/useAuth";
 import { todayKey, weekKey } from "@/lib/utils";
 
-const TARGETS_KEY = "checkin.targets.v1";
-const CHECKINS_KEY = "checkin.checkins.v1";
+interface TargetRow {
+  id: string;
+  user_id: string;
+  title: string;
+  emoji: string;
+  frequency: Frequency;
+  weekly_goal: number | null;
+  color_hex: string;
+  created_at: string;
+  archived: boolean;
+}
 
-function loadFromStorage<T>(key: string, fallback: T): T {
-  try {
-    const raw = window.localStorage.getItem(key);
-    if (!raw) return fallback;
-    return JSON.parse(raw) as T;
-  } catch {
-    return fallback;
-  }
+interface CheckInRow {
+  id: string;
+  target_id: string;
+  user_id: string;
+  period_key: string;
+  note: string | null;
+  completed_at: string;
+}
+
+function targetFromRow(r: TargetRow): Target {
+  return {
+    id: r.id,
+    userId: r.user_id,
+    title: r.title,
+    emoji: r.emoji,
+    frequency: r.frequency,
+    weeklyGoal: r.weekly_goal ?? undefined,
+    colorHex: r.color_hex,
+    createdAt: r.created_at,
+    archived: r.archived,
+  };
+}
+
+function checkInFromRow(r: CheckInRow): CheckIn {
+  return {
+    id: r.id,
+    targetId: r.target_id,
+    userId: r.user_id,
+    periodKey: r.period_key,
+    note: r.note ?? undefined,
+    completedAt: r.completed_at,
+  };
 }
 
 /**
- * Prototype data layer. Backed by localStorage + seeded mock data so the
- * demo feels persistent across reloads. This is the piece that gets swapped
- * for Supabase queries/mutations once auth + a real backend are wired up.
+ * Real Supabase-backed targets + check-ins for the signed-in user. A brand
+ * new account starts with zero rows in both tables, so this is genuinely
+ * empty until the user creates their first target.
  */
 export function useCheckinData() {
-  const [targets, setTargets] = useState<Target[]>(() =>
-    loadFromStorage(TARGETS_KEY, seedTargets)
-  );
-  const [checkIns, setCheckIns] = useState<CheckIn[]>(() =>
-    loadFromStorage(CHECKINS_KEY, seedCheckIns)
-  );
+  const { userId } = useAuth();
+  const [targets, setTargets] = useState<Target[]>([]);
+  const [checkIns, setCheckIns] = useState<CheckIn[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  const reload = useCallback(async () => {
+    if (!userId) {
+      setTargets([]);
+      setCheckIns([]);
+      setIsLoading(false);
+      return;
+    }
+    const [{ data: targetRows }, { data: checkInRows }] = await Promise.all([
+      supabase.from("targets").select("*").eq("user_id", userId).order("created_at", { ascending: true }),
+      supabase.from("check_ins").select("*").eq("user_id", userId),
+    ]);
+    setTargets(((targetRows as TargetRow[]) ?? []).map(targetFromRow));
+    setCheckIns(((checkInRows as CheckInRow[]) ?? []).map(checkInFromRow));
+    setIsLoading(false);
+  }, [userId]);
 
   useEffect(() => {
-    window.localStorage.setItem(TARGETS_KEY, JSON.stringify(targets));
-  }, [targets]);
+    setIsLoading(true);
+    reload();
+  }, [reload]);
 
-  useEffect(() => {
-    window.localStorage.setItem(CHECKINS_KEY, JSON.stringify(checkIns));
-  }, [checkIns]);
+  const myTargets = useMemo(() => targets.filter((t) => !t.archived), [targets]);
 
-  const myTargets = useMemo(
-    () =>
-      targets
-        .filter((t) => t.userId === CURRENT_USER_ID && !t.archived)
-        .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
-    [targets]
-  );
-
-  const currentPeriodKey = useCallback(
-    (t: Target) => (t.frequency === "daily" ? todayKey() : weekKey()),
-    []
-  );
+  const currentPeriodKey = useCallback((t: Target) => (t.frequency === "daily" ? todayKey() : weekKey()), []);
 
   const isCompletedNow = useCallback(
     (targetId: string) => {
       const t = targets.find((x) => x.id === targetId);
       if (!t) return false;
       const period = currentPeriodKey(t);
-      return checkIns.some(
-        (c) => c.targetId === targetId && c.periodKey === period
-      );
+      return checkIns.some((c) => c.targetId === targetId && c.periodKey === period);
     },
     [targets, checkIns, currentPeriodKey]
   );
 
   const streakFor = useCallback(
     (targetId: string) => {
-      // Count consecutive completed days/weeks backward from the current period.
       const t = targets.find((x) => x.id === targetId);
       if (!t) return 0;
       const keys = checkIns
@@ -80,15 +109,11 @@ export function useCheckinData() {
       let streak = 0;
       const cursor = new Date();
       for (let i = 0; i < 400; i++) {
-        const key =
-          t.frequency === "daily"
-            ? cursor.toISOString().slice(0, 10)
-            : weekKey(cursor);
+        const key = t.frequency === "daily" ? cursor.toISOString().slice(0, 10) : weekKey(cursor);
         if (keySet.has(key)) {
           streak++;
           cursor.setDate(cursor.getDate() - (t.frequency === "daily" ? 1 : 7));
         } else if (i === 0) {
-          // today/this-week not done yet doesn't break an existing streak
           cursor.setDate(cursor.getDate() - (t.frequency === "daily" ? 1 : 7));
         } else {
           break;
@@ -100,52 +125,80 @@ export function useCheckinData() {
   );
 
   const toggleComplete = useCallback(
-    (targetId: string, note?: string) => {
+    async (targetId: string, note?: string) => {
+      if (!userId) return;
       const t = targets.find((x) => x.id === targetId);
       if (!t) return;
       const period = currentPeriodKey(t);
-      setCheckIns((prev) => {
-        const existing = prev.find(
-          (c) => c.targetId === targetId && c.periodKey === period
-        );
-        if (existing) {
-          return prev.filter((c) => c.id !== existing.id);
-        }
-        const entry: CheckIn = {
-          id: `${targetId}-${period}-${Date.now()}`,
-          targetId,
-          userId: CURRENT_USER_ID,
-          periodKey: period,
-          note: note?.trim() || undefined,
-          completedAt: new Date().toISOString(),
-        };
-        return [entry, ...prev];
-      });
+      const existing = checkIns.find((c) => c.targetId === targetId && c.periodKey === period);
+
+      if (existing) {
+        const { error } = await supabase.from("check_ins").delete().eq("id", existing.id);
+        if (!error) setCheckIns((prev) => prev.filter((c) => c.id !== existing.id));
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from("check_ins")
+        .insert({
+          target_id: targetId,
+          user_id: userId,
+          period_key: period,
+          note: note?.trim() || null,
+        })
+        .select()
+        .single();
+      if (!error && data) setCheckIns((prev) => [checkInFromRow(data as CheckInRow), ...prev]);
     },
-    [targets, currentPeriodKey]
+    [targets, checkIns, userId, currentPeriodKey]
   );
 
   const addTarget = useCallback(
-    (input: Pick<Target, "title" | "emoji" | "frequency" | "colorHex" | "weeklyGoal">) => {
-      const target: Target = {
-        id: `t-${Date.now()}`,
-        userId: CURRENT_USER_ID,
-        createdAt: new Date().toISOString(),
-        ...input,
-      };
+    async (input: Pick<Target, "title" | "emoji" | "frequency" | "colorHex" | "weeklyGoal">) => {
+      if (!userId) return undefined;
+      const { data, error } = await supabase
+        .from("targets")
+        .insert({
+          user_id: userId,
+          title: input.title,
+          emoji: input.emoji,
+          frequency: input.frequency,
+          weekly_goal: input.weeklyGoal ?? null,
+          color_hex: input.colorHex,
+        })
+        .select()
+        .single();
+      if (error || !data) return undefined;
+      const target = targetFromRow(data as TargetRow);
       setTargets((prev) => [...prev, target]);
       return target;
     },
-    []
+    [userId]
   );
 
-  const updateTarget = useCallback((id: string, patch: Partial<Target>) => {
-    setTargets((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+  const updateTarget = useCallback(async (id: string, patch: Partial<Target>) => {
+    const dbPatch: Record<string, unknown> = {};
+    if (patch.title !== undefined) dbPatch.title = patch.title;
+    if (patch.emoji !== undefined) dbPatch.emoji = patch.emoji;
+    if (patch.frequency !== undefined) dbPatch.frequency = patch.frequency;
+    if (patch.weeklyGoal !== undefined) dbPatch.weekly_goal = patch.weeklyGoal;
+    if (patch.colorHex !== undefined) dbPatch.color_hex = patch.colorHex;
+    if (patch.archived !== undefined) dbPatch.archived = patch.archived;
+    if (Object.keys(dbPatch).length === 0) return;
+
+    const { data, error } = await supabase.from("targets").update(dbPatch).eq("id", id).select().single();
+    if (!error && data) {
+      const updated = targetFromRow(data as TargetRow);
+      setTargets((prev) => prev.map((t) => (t.id === id ? updated : t)));
+    }
   }, []);
 
-  const deleteTarget = useCallback((id: string) => {
-    setTargets((prev) => prev.filter((t) => t.id !== id));
-    setCheckIns((prev) => prev.filter((c) => c.targetId !== id));
+  const deleteTarget = useCallback(async (id: string) => {
+    const { error } = await supabase.from("targets").delete().eq("id", id);
+    if (!error) {
+      setTargets((prev) => prev.filter((t) => t.id !== id));
+      setCheckIns((prev) => prev.filter((c) => c.targetId !== id));
+    }
   }, []);
 
   const checkInsForTarget = useCallback(
@@ -157,6 +210,7 @@ export function useCheckinData() {
     targets,
     checkIns,
     myTargets,
+    isLoading,
     isCompletedNow,
     streakFor,
     toggleComplete,

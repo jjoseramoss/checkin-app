@@ -9,15 +9,22 @@ import { Auth } from "@/pages/Auth";
 import { BottomNav } from "@/components/BottomNav";
 import { Sidebar } from "@/components/Sidebar";
 import { TopBar } from "@/components/TopBar";
+import { OnboardingFlow } from "@/components/OnboardingFlow";
 import { useAuth } from "@/hooks/useAuth";
+import { useMyProfile } from "@/hooks/useMyProfile";
 import type { Route } from "@/lib/routes";
 
 export default function App() {
-  const { isAuthed, login } = useAuth();
+  const { isAuthed, isLoading } = useAuth();
+  const myProfile = useMyProfile();
   const [route, setRoute] = useState<Route>("dashboard");
 
+  if (isLoading) {
+    return <div className="min-h-screen bg-background" />;
+  }
+
   if (!isAuthed) {
-    return <Auth onAuthed={login} />;
+    return <Auth />;
   }
 
   return (
@@ -38,6 +45,15 @@ export default function App() {
       </div>
 
       <BottomNav route={route} onNavigate={setRoute} />
+
+      {!myProfile.isLoading && !myProfile.onboarded && (
+        <OnboardingFlow
+          profile={myProfile.profile}
+          updateProfile={myProfile.updateProfile}
+          uploadAvatar={myProfile.uploadAvatar}
+          onDone={myProfile.completeOnboarding}
+        />
+      )}
     </div>
   );
 }

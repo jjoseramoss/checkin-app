@@ -1,27 +1,51 @@
 import { useState, type FormEvent } from "react";
+import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 type View = "landing" | "login" | "signup";
 
-interface AuthProps {
-  onAuthed: () => void;
-}
-
 /**
- * Simple local auth gate. No backend yet, so login/signup both just
- * confirm the form and let the person in — this is the seam that gets
- * swapped for real Supabase auth later.
+ * Email/password auth gate, backed by real Supabase auth (useAuth). On
+ * success there's nothing else to do here — App.tsx's own useAuth() call
+ * shares the same session state and swaps over to the main app on its own.
  */
-export function Auth({ onAuthed }: AuthProps) {
+export function Auth() {
+  const { signIn, signUp } = useAuth();
   const [view, setView] = useState<View>("landing");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
-  function handleSubmit(e: FormEvent) {
+  function goTo(next: View) {
+    setError(null);
+    setInfo(null);
+    setView(next);
+  }
+
+  async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    onAuthed();
+    setError(null);
+    setInfo(null);
+    setSubmitting(true);
+    try {
+      if (view === "login") {
+        const result = await signIn(email, password);
+        if (result.error) setError(result.error);
+      } else if (view === "signup") {
+        const result = await signUp(email, password);
+        if (result.error) {
+          setError(result.error);
+        } else if (result.needsEmailConfirmation) {
+          setInfo("Account created — check your email to confirm it, then log in.");
+        }
+      }
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -33,10 +57,10 @@ export function Auth({ onAuthed }: AuthProps) {
 
       {view === "landing" && (
         <div className="flex w-full max-w-xs flex-col gap-3">
-          <Button size="lg" onClick={() => setView("login")}>
+          <Button size="lg" onClick={() => goTo("login")}>
             Log in
           </Button>
-          <Button size="lg" variant="outline" onClick={() => setView("signup")}>
+          <Button size="lg" variant="outline" onClick={() => goTo("signup")}>
             Sign up
           </Button>
         </div>
@@ -63,16 +87,24 @@ export function Auth({ onAuthed }: AuthProps) {
               type="password"
               placeholder="••••••••"
               required
+              minLength={6}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
             />
+            {view === "signup" && (
+              <span className="text-xs text-muted-foreground">At least 6 characters.</span>
+            )}
           </div>
-          <Button type="submit" size="lg" className="mt-1">
-            {view === "login" ? "Log in" : "Create account"}
+
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          {info && <p className="text-sm text-success">{info}</p>}
+
+          <Button type="submit" size="lg" className="mt-1" disabled={submitting}>
+            {submitting ? "Please wait…" : view === "login" ? "Log in" : "Create account"}
           </Button>
           <button
             type="button"
-            onClick={() => setView("landing")}
+            onClick={() => goTo("landing")}
             className="text-sm text-muted-foreground hover:text-foreground"
           >
             Back

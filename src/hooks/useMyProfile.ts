@@ -1,64 +1,151 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { UserProfile } from "@/types";
-import { getUser, CURRENT_USER_ID } from "@/data/mock";
+import { supabase } from "@/lib/supabase";
+import { useAuth } from "@/hooks/useAuth";
 
-const PROFILE_KEY = "checkin.profile.v1";
 const MAX_PINNED = 3;
 
-interface ProfileOverrides {
-  displayName?: string;
-  bio?: string;
-  avatarUrl?: string;
-  pinnedTargetIds?: string[];
+interface ProfileRow {
+  id: string;
+  username: string;
+  display_name: string;
+  avatar_url: string | null;
+  bio: string | null;
+  pinned_target_ids: string[] | null;
+  onboarded: boolean;
 }
 
-function loadFromStorage<T>(key: string, fallback: T): T {
-  try {
-    const raw = window.localStorage.getItem(key);
-    if (!raw) return fallback;
-    return JSON.parse(raw) as T;
-  } catch {
-    return fallback;
-  }
+const EMPTY_PROFILE: UserProfile = { id: "", username: "", displayName: "", avatarUrl: "" };
+
+function toProfile(row: ProfileRow): UserProfile {
+  return {
+    id: row.id,
+    username: row.username,
+    displayName: row.display_name,
+    avatarUrl: row.avatar_url ?? "",
+    bio: row.bio ?? undefined,
+  };
+}
+
+interface ProfilePatch {
+  displayName?: string;
+  username?: string;
+  bio?: string;
+  avatarUrl?: string;
 }
 
 /**
- * Prototype data layer for "my" editable profile fields. The base identity
- * (id, username) stays fixed from the seed data; display name, bio, avatar
- * and pinned targets are overridable and persisted to localStorage.
+ * Real Supabase-backed profile for the signed-in user. Every consumer that
+ * calls this hook gets its own fetch — there's no shared cache yet (that's
+ * deferred to the phase 3 optimization pass), so a change made through one
+ * instance won't be visible in another until it remounts or reloads itself.
  */
 export function useMyProfile() {
-  const base = getUser(CURRENT_USER_ID)!;
-  const [overrides, setOverrides] = useState<ProfileOverrides>(() =>
-    loadFromStorage(PROFILE_KEY, {} as ProfileOverrides)
-  );
+  const { userId } = useAuth();
+  const [row, setRow] = useState<ProfileRow | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  const reload = useCallback(async () => {
+    if (!userId) {
+      setRow(null);
+      setIsLoading(false);
+      return;
+    }
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("id, username, display_name, avatar_url, bio, pinned_target_ids, onboarded")
+      .eq("id", userId)
+      .single();
+    if (!error && data) setRow(data as ProfileRow);
+    setIsLoading(false);
+  }, [userId]);
 
   useEffect(() => {
-    window.localStorage.setItem(PROFILE_KEY, JSON.stringify(overrides));
-  }, [overrides]);
+    setIsLoading(true);
+    reload();
+  }, [reload]);
 
-  const profile: UserProfile = useMemo(
-    () => ({
-      ...base,
-      displayName: overrides.displayName ?? base.displayName,
-      bio: overrides.bio ?? base.bio,
-      avatarUrl: overrides.avatarUrl ?? base.avatarUrl,
-    }),
-    [base, overrides]
-  );
-
-  const pinnedTargetIds = overrides.pinnedTargetIds ?? [];
+  function friendlyError(message: string): string {
+    return message.toLowerCase().includes("duplicate") ? "That username is taken — try another." : message;
+  }
 
   const updateProfile = useCallback(
-    (patch: { displayName?: string; bio?: string; avatarUrl?: string }) => {
-      setOverrides((prev) => ({ ...prev, ...patch }));
+    async (patch: ProfilePatch): Promise<{ error: string | null }> => {
+      if (!userId) return { error: "Not signed in" };
+      const dbPatch: Record<string, unknown> = {};
+      if (patch.displayName !== undefined) dbPatch.display_name = patch.displayName;
+      if (patch.username !== undefined) dbPatch.username = patch.username;
+      if (patch.bio !== undefined) dbPatch.bio = patch.bio;
+      if (patch.avatarUrl !== undefined) dbPatch.avatar_url = patch.avatarUrl;
+      if (Object.keys(dbPatch).length === 0) return { error: null };
+
+      const { data, error } = await supabase
+        .from("profiles")
+        .update(dbPatch)
+        .eq("id", userId)
+        .select("id, username, display_name, avatar_url, bio, pinned_target_ids, onboarded")
+        .single();
+      if (error) return { error: friendlyError(error.message) };
+      setRow(data as ProfileRow);
+      return { error: null };
     },
-    []
+    [userId]
   );
 
-  const setPinnedTargets = useCallback((ids: string[]) => {
-    setOverrides((prev) => ({ ...prev, pinnedTargetIds: ids.slice(0, MAX_PINNED) }));
-  }, []);
+  const setPinnedTargets = useCallback(
+    async (ids: string[]) => {
+      if (!userId) return;
+      const trimmed = ids.slice(0, MAX_PINNED);
+      const { data, error } = await supabase
+        .from("profiles")
+        .update({ pinned_target_ids: trimmed })
+        .eq("id", userId)
+        .select("id, username, display_name, avatar_url, bio, pinned_target_ids, onboarded")
+        .single();
+      if (!error && data) setRow(data as ProfileRow);
+    },
+    [userId]
+  );
 
-  return { profile, pinnedTargetIds, updateProfile, setPinnedTargets, maxPinned: MAX_PINNED };
+  const uploadAvatar = useCallback(
+    async (file: File): Promise<{ error: string | null }> => {
+      if (!userId) return { error: "Not signed in" };
+      const ext = file.name.split(".").pop() || "jpg";
+      const path = `${userId}/avatar.${ext}`;
+      const { error: uploadError } = await supabase.storage
+        .from("avatars")
+        .upload(path, file, { upsert: true, cacheControl: "3600" });
+      if (uploadError) return { error: uploadError.message };
+
+      const { data: publicUrlData } = supabase.storage.from("avatars").getPublicUrl(path);
+      // Cache-bust so the new image shows immediately even if the path is unchanged.
+      const avatarUrl = `${publicUrlData.publicUrl}?t=${Date.now()}`;
+      return updateProfile({ avatarUrl });
+    },
+    [userId, updateProfile]
+  );
+
+  const completeOnboarding = useCallback(async () => {
+    if (!userId) return;
+    const { data, error } = await supabase
+      .from("profiles")
+      .update({ onboarded: true })
+      .eq("id", userId)
+      .select("id, username, display_name, avatar_url, bio, pinned_target_ids, onboarded")
+      .single();
+    if (!error && data) setRow(data as ProfileRow);
+  }, [userId]);
+
+  return {
+    profile: row ? toProfile(row) : EMPTY_PROFILE,
+    pinnedTargetIds: row?.pinned_target_ids ?? [],
+    // Default true so we never flash the onboarding modal before the real value has loaded.
+    onboarded: row?.onboarded ?? true,
+    isLoading,
+    updateProfile,
+    setPinnedTargets,
+    uploadAvatar,
+    completeOnboarding,
+    maxPinned: MAX_PINNED,
+  };
 }

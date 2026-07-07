@@ -1,6 +1,5 @@
 import { useMemo, useState } from "react";
 import { UserPlus, Check, X } from "lucide-react";
-import { getUser } from "@/data/mock";
 import { useFriends } from "@/hooks/useFriends";
 import { FriendCard } from "@/components/FriendCard";
 import { UserProfileDialog, type FriendStatus } from "@/components/UserProfileDialog";
@@ -11,8 +10,8 @@ export function Friends() {
   const {
     friendIds,
     incomingIds,
-    outgoingIds,
     discoverable,
+    profiles,
     friendCount,
     statusFor,
     sendRequest,
@@ -24,8 +23,9 @@ export function Friends() {
   const [query, setQuery] = useState("");
   const [viewingUserId, setViewingUserId] = useState<string | null>(null);
 
-  const friends = friendIds.map(getUser).filter(Boolean) as NonNullable<ReturnType<typeof getUser>>[];
-  const incoming = incomingIds.map(getUser).filter(Boolean) as NonNullable<ReturnType<typeof getUser>>[];
+  const profileById = useMemo(() => new Map(profiles.map((p) => [p.id, p])), [profiles]);
+  const friends = friendIds.map((id) => profileById.get(id)).filter((u): u is NonNullable<typeof u> => !!u);
+  const incoming = incomingIds.map((id) => profileById.get(id)).filter((u): u is NonNullable<typeof u> => !!u);
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -35,7 +35,7 @@ export function Friends() {
     );
   }, [discoverable, query]);
 
-  const viewingUser = viewingUserId ? getUser(viewingUserId) ?? null : null;
+  const viewingUser = viewingUserId ? profileById.get(viewingUserId) ?? null : null;
   const viewingStatus: FriendStatus = viewingUserId ? statusFor(viewingUserId) : "none";
 
   return (

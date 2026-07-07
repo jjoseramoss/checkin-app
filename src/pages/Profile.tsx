@@ -16,6 +16,7 @@ export function Profile() {
     profile: me,
     pinnedTargetIds,
     updateProfile,
+    uploadAvatar,
     setPinnedTargets,
     maxPinned,
   } = useMyProfile();
@@ -54,7 +55,7 @@ export function Profile() {
             </p>
           </div>
           {me.bio && <p className="text-sm text-foreground/80">{me.bio}</p>}
-          <EditProfileDialog profile={me} onSave={updateProfile} />
+          <EditProfileDialog profile={me} onSave={updateProfile} onUploadAvatar={uploadAvatar} />
         </CardContent>
       </Card>
 

@@ -1,82 +1,78 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { WeightEntry } from "@/types";
-import { CURRENT_USER_ID } from "@/data/mock";
+import { supabase } from "@/lib/supabase";
+import { useAuth } from "@/hooks/useAuth";
 import { todayKey, daysAgoKey } from "@/lib/utils";
-
-const WEIGHT_KEY = "checkin.weight.v1";
 
 export type WeightRange = "week" | "month" | "year";
 
-function loadFromStorage<T>(key: string, fallback: T): T {
-  try {
-    const raw = window.localStorage.getItem(key);
-    if (!raw) return fallback;
-    return JSON.parse(raw) as T;
-  } catch {
-    return fallback;
-  }
+interface WeightRow {
+  id: string;
+  user_id: string;
+  date: string;
+  weight: number;
+  created_at: string;
+}
+
+function fromRow(r: WeightRow): WeightEntry {
+  return { id: r.id, userId: r.user_id, date: r.date, weight: Number(r.weight), createdAt: r.created_at };
 }
 
 /**
- * Prototype data layer for weight tracking. Same shape as useCheckinData:
- * localStorage-backed for now, swap for Supabase later.
+ * Real Supabase-backed weight log for the signed-in user. Empty until they
+ * log their first entry — one row per (user, date), upserted on re-log.
  */
 export function useWeightData() {
-  const [entries, setEntries] = useState<WeightEntry[]>(() =>
-    loadFromStorage(WEIGHT_KEY, [] as WeightEntry[])
-  );
+  const { userId } = useAuth();
+  const [entries, setEntries] = useState<WeightEntry[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  const reload = useCallback(async () => {
+    if (!userId) {
+      setEntries([]);
+      setIsLoading(false);
+      return;
+    }
+    const { data } = await supabase
+      .from("weight_entries")
+      .select("*")
+      .eq("user_id", userId)
+      .order("date", { ascending: true });
+    setEntries(((data as WeightRow[]) ?? []).map(fromRow));
+    setIsLoading(false);
+  }, [userId]);
 
   useEffect(() => {
-    window.localStorage.setItem(WEIGHT_KEY, JSON.stringify(entries));
-  }, [entries]);
+    setIsLoading(true);
+    reload();
+  }, [reload]);
 
-  const myEntries = useMemo(
-    () =>
-      entries
-        .filter((e) => e.userId === CURRENT_USER_ID)
-        .sort((a, b) => a.date.localeCompare(b.date)),
-    [entries]
-  );
+  const latestEntry = entries.length ? entries[entries.length - 1] : undefined;
 
-  const latestEntry = useMemo(
-    () => (myEntries.length ? myEntries[myEntries.length - 1] : undefined),
-    [myEntries]
-  );
-
-  const logWeight = useCallback((weight: number, date: string = todayKey()) => {
-    setEntries((prev) => {
-      const existing = prev.find(
-        (e) => e.userId === CURRENT_USER_ID && e.date === date
-      );
-      if (existing) {
-        return prev.map((e) =>
-          e.id === existing.id ? { ...e, weight, createdAt: new Date().toISOString() } : e
-        );
+  const logWeight = useCallback(
+    async (weight: number, date: string = todayKey()) => {
+      if (!userId) return;
+      const { data, error } = await supabase
+        .from("weight_entries")
+        .upsert({ user_id: userId, date, weight }, { onConflict: "user_id,date" })
+        .select()
+        .single();
+      if (!error && data) {
+        const entry = fromRow(data as WeightRow);
+        setEntries((prev) => [...prev.filter((e) => e.date !== date), entry].sort((a, b) => a.date.localeCompare(b.date)));
       }
-      const entry: WeightEntry = {
-        id: `w-${Date.now()}`,
-        userId: CURRENT_USER_ID,
-        date,
-        weight,
-        createdAt: new Date().toISOString(),
-      };
-      return [...prev, entry];
-    });
-  }, []);
+    },
+    [userId]
+  );
 
   const entriesInRange = useCallback(
     (range: WeightRange) => {
       const daysBack = range === "week" ? 7 : range === "month" ? 30 : 365;
       const cutoff = daysAgoKey(daysBack);
-      return myEntries.filter((e) => e.date >= cutoff);
+      return entries.filter((e) => e.date >= cutoff);
     },
-    [myEntries]
+    [entries]
   );
 
-  return {
-    entries: myEntries,
-    latestEntry,
-    logWeight,
-    entriesInRange,
-  };
+  return { entries, latestEntry, isLoading, logWeight, entriesInRange };
 }

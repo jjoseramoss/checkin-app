@@ -1,4 +1,3 @@
-import { useEffect } from "react";
 import { Plus, X } from "lucide-react";
 import type { MealItem } from "@/types";
 import { Card, CardContent } from "@/components/ui/card";
@@ -10,13 +9,16 @@ interface MealSectionCardProps {
   items: MealItem[];
   onAdd: () => void;
   onUpdate: (id: string, text: string) => void;
+  onUpdateProtein: (id: string, protein: number | null) => void;
   onRemove: (id: string) => void;
 }
 
 /**
  * One meal section (Breakfast/Lunch/Dinner/Snacks): a growable list of
- * plain-text inputs. The "+" button appends another empty input; each
- * row is stored as its own array entry for the day.
+ * plain-text inputs, each with its own protein amount. The hook backing
+ * `items` always pads this list up to 3 rows with client-side-only
+ * placeholders — nothing is saved until the user actually types into one,
+ * so this component itself never needs to create rows just to stay non-empty.
  */
 export function MealSectionCard({
   title,
@@ -24,13 +26,9 @@ export function MealSectionCard({
   items,
   onAdd,
   onUpdate,
+  onUpdateProtein,
   onRemove,
 }: MealSectionCardProps) {
-  // Always keep at least one input visible so the section is never empty.
-  useEffect(() => {
-    if (items.length === 0) onAdd();
-  }, [items.length, onAdd]);
-
   return (
     <Card>
       <CardContent className="flex flex-col gap-2 p-4">
@@ -44,7 +42,27 @@ export function MealSectionCard({
               placeholder={`What did you have for ${title.toLowerCase()}?`}
               value={item.text}
               onChange={(e) => onUpdate(item.id, e.target.value)}
+              className="flex-1"
             />
+            <div className="flex shrink-0 items-center gap-1.5">
+              <label htmlFor={`protein-${item.id}`} className="text-xs font-medium text-muted-foreground">
+                Protein:
+              </label>
+              <Input
+                id={`protein-${item.id}`}
+                type="number"
+                inputMode="numeric"
+                min={0}
+                placeholder="0"
+                value={item.protein ?? ""}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  onUpdateProtein(item.id, raw === "" ? null : Number(raw));
+                }}
+                className="w-20"
+              />
+              <span className="text-xs text-muted-foreground">g</span>
+            </div>
             <button
               type="button"
               onClick={() => onRemove(item.id)}

@@ -1,31 +1,61 @@
 import { useCallback, useEffect, useState } from "react";
+import type { Session } from "@supabase/supabase-js";
+import { supabase } from "@/lib/supabase";
 
-const AUTH_KEY = "checkin.auth.v1";
-
-function loadFromStorage<T>(key: string, fallback: T): T {
-  try {
-    const raw = window.localStorage.getItem(key);
-    if (!raw) return fallback;
-    return JSON.parse(raw) as T;
-  } catch {
-    return fallback;
-  }
+interface AuthResult {
+  error: string | null;
+  /** True when signup succeeded but email confirmation is required before a session exists. */
+  needsEmailConfirmation?: boolean;
 }
 
 /**
- * Prototype auth gate. No real backend yet — logging in or signing up just
- * flips a flag in localStorage. This is the seam that gets swapped for
- * `supabase.auth` once a real backend is wired up.
+ * Real Supabase auth (email/password). Session state is reactive — every
+ * component that calls useAuth() shares the same underlying supabase client,
+ * so signing in from the Auth screen automatically flips `isAuthed` for
+ * whoever else is watching it (e.g. App.tsx), no manual wiring needed.
  */
 export function useAuth() {
-  const [isAuthed, setIsAuthed] = useState(() => loadFromStorage(AUTH_KEY, false));
+  const [session, setSession] = useState<Session | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    window.localStorage.setItem(AUTH_KEY, JSON.stringify(isAuthed));
-  }, [isAuthed]);
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setIsLoading(false);
+    });
 
-  const login = useCallback(() => setIsAuthed(true), []);
-  const logout = useCallback(() => setIsAuthed(false), []);
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSession(newSession);
+    });
 
-  return { isAuthed, login, logout };
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const signUp = useCallback(async (email: string, password: string): Promise<AuthResult> => {
+    const { data, error } = await supabase.auth.signUp({ email, password });
+    if (error) return { error: error.message };
+    if (!data.session) return { error: null, needsEmailConfirmation: true };
+    return { error: null };
+  }, []);
+
+  const signIn = useCallback(async (email: string, password: string): Promise<AuthResult> => {
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) return { error: error.message };
+    return { error: null };
+  }, []);
+
+  const logout = useCallback(async () => {
+    await supabase.auth.signOut();
+  }, []);
+
+  return {
+    isAuthed: !!session,
+    isLoading,
+    userId: session?.user.id ?? null,
+    signUp,
+    signIn,
+    logout,
+  };
 }
