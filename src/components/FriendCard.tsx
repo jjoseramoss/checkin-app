@@ -20,14 +20,13 @@ export function FriendCard({ user, onOpenProfile, action }: FriendCardProps) {
           className="flex min-w-0 flex-1 items-center gap-3 text-left"
         >
           <Avatar className="h-11 w-11 border border-border">
-            <AvatarImage src={user.avatarUrl} alt={user.displayName} />
-            <AvatarFallback>{user.displayName[0]}</AvatarFallback>
+            <AvatarImage src={user.avatarUrl} alt={user.username} />
+            <AvatarFallback>{user.username[0]}</AvatarFallback>
           </Avatar>
           <div className="flex min-w-0 flex-col">
             <span className="truncate font-display font-bold leading-tight">
-              {user.displayName}
+              @{user.username}
             </span>
-            <span className="truncate text-xs text-muted-foreground">@{user.username}</span>
           </div>
         </button>
         <div className="flex shrink-0 items-center gap-2">{action}</div>

@@ -91,11 +91,13 @@ export function UserProfileDialog({
             <DialogHeader>
               <div className="flex flex-col items-center gap-2 pt-1 text-center">
                 <Avatar className="h-20 w-20 border border-border">
-                  <AvatarImage src={user.avatarUrl} alt={user.displayName} />
-                  <AvatarFallback className="text-2xl">{user.displayName[0]}</AvatarFallback>
+                  <AvatarImage src={user.avatarUrl} alt={user.username} />
+                  <AvatarFallback className="text-2xl">{user.username[0]}</AvatarFallback>
                 </Avatar>
-                <DialogTitle>{user.displayName}</DialogTitle>
-                <DialogDescription>@{user.username}</DialogDescription>
+                <DialogTitle>@{user.username}</DialogTitle>
+                <DialogDescription className="sr-only">
+                  Profile details for @{user.username}
+                </DialogDescription>
               </div>
             </DialogHeader>
 
